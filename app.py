@@ -4,6 +4,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Query
 from fastapi.responses import PlainTextResponse, JSONResponse
+import re
 
 # Carga .env
 load_dotenv(dotenv_path=Path(__file__).parent / ".env", override=True)
@@ -19,6 +20,19 @@ app = FastAPI()
 # Estados y datos en memoria
 user_states = {}
 user_data = {}
+
+# -------- Lista de comunas de Santiago --------
+COMUNAS_SANTIAGO = {
+    "cerrillos","cerro navia","conchalí","el bosque","estación central","huechuraba",
+    "independencia","la cisterna","la florida","la granja","la pintana","la reina",
+    "las condes","lo barnechea","lo espejo","lo prado","macul","maipú",
+    "ñuñoa","pedro aguirre cerda","peñalolén","providencia","pudahuel",
+    "quilicura","quinta normal","recoleta","renca","san joaquín","san miguel",
+    "san ramón","santiago","vitacura","puente alto","pirque","san josé de maipo",
+    "colina","lampa","tiltil","san bernardo","buin","calera de tango","paine",
+    "melipilla","curacaví","maria pinto","san pedro","talagante","el monte",
+    "isla de maipo","padre hurtado","peñaflor"
+}
 
 # ---------------- Helpers ----------------
 def send_text(to: str, message: str):
@@ -55,7 +69,6 @@ def send_contact(to: str, full_name: str, phone_e164: str):
     print("[SEND_CONTACT]", r.status_code, r.text)
 
 def send_to_sheets(data: dict):
-    """Envía un JSON al WebApp de Apps Script con claves en minúsculas."""
     try:
         r = requests.post(SHEETS_WEBAPP_URL, json=data, timeout=20)
         print("[SHEETS]", r.status_code, r.text)
@@ -115,7 +128,6 @@ async def receive(request: Request):
             text = msg.get("text", {}).get("body", "").strip()
             msg_type = msg["type"]
 
-            # Si el mensaje viene de un menú interactivo (List Messages)
             if msg_type == "interactive":
                 interactive = msg["interactive"]
                 if interactive["type"] == "list_reply":
@@ -150,21 +162,29 @@ async def receive(request: Request):
 
             # -------- FLUJO EDUCACIÓN --------
             elif state == "educacion_nombre":
+                if not re.match(r"^[a-zA-ZáéíóúÁÉÍÓÚñÑ ]+$", text):
+                    send_text(from_number, "🤔 El nombre debería contener solo letras. ¿Me lo escribes de nuevo?")
+                    return JSONResponse({"status": "ok"})
                 ud["nombre_perro"] = text
                 user_data[from_number] = ud
                 send_text(from_number, "👌 ¿En qué comuna vives?")
                 user_states[from_number] = "educacion_comuna"
 
             elif state == "educacion_comuna":
+                if text.lower() not in COMUNAS_SANTIAGO:
+                    send_text(from_number, "📍 No reconozco esa comuna. Por favor escribe una comuna válida de Santiago.")
+                    return JSONResponse({"status": "ok"})
                 ud["comuna"] = text
                 user_data[from_number] = ud
                 send_text(from_number, "📋 ¿Qué te gustaría trabajar con tu perrito?")
                 user_states[from_number] = "educacion_detalle"
 
             elif state == "educacion_detalle":
+                if len(text) < 5:
+                    send_text(from_number, "📝 El detalle debe tener al menos 5 caracteres. Intenta de nuevo.")
+                    return JSONResponse({"status": "ok"})
                 ud["detalle"] = text
                 user_data[from_number] = ud
-                # <-- Claves en minúsculas para Apps Script
                 send_to_sheets({
                     "nombre": ud.get("nombre_cliente", ud.get("nombre_perro", "")),
                     "comuna": ud.get("comuna", ""),
@@ -177,12 +197,18 @@ async def receive(request: Request):
 
             # -------- FLUJO PASEOS --------
             elif state == "paseo_nombre":
+                if not re.match(r"^[a-zA-ZáéíóúÁÉÍÓÚñÑ ]+$", text):
+                    send_text(from_number, "🤔 El nombre debería contener solo letras. ¿Me lo escribes de nuevo?")
+                    return JSONResponse({"status": "ok"})
                 ud["nombre_perro"] = text
                 user_data[from_number] = ud
                 send_text(from_number, "👌 ¿En qué comuna vives?")
                 user_states[from_number] = "paseo_comuna"
 
             elif state == "paseo_comuna":
+                if text.lower() not in COMUNAS_SANTIAGO:
+                    send_text(from_number, "📍 No reconozco esa comuna. Por favor escribe una comuna válida de Santiago.")
+                    return JSONResponse({"status": "ok"})
                 ud["comuna"] = text
                 user_data[from_number] = ud
                 send_to_sheets({
@@ -197,12 +223,18 @@ async def receive(request: Request):
 
             # -------- FLUJO HUMANO --------
             elif state == "humano_nombre":
+                if not re.match(r"^[a-zA-ZáéíóúÁÉÍÓÚñÑ ]+$", text):
+                    send_text(from_number, "🤔 El nombre debería contener solo letras. ¿Me lo escribes de nuevo?")
+                    return JSONResponse({"status": "ok"})
                 ud["nombre_cliente"] = text
                 user_data[from_number] = ud
                 send_text(from_number, "✍️ Gracias. Ahora cuéntame brevemente tu *motivo de consulta*.")
                 user_states[from_number] = "humano_motivo"
 
             elif state == "humano_motivo":
+                if len(text) < 5:
+                    send_text(from_number, "📝 El motivo debe tener al menos 5 caracteres. Intenta de nuevo.")
+                    return JSONResponse({"status": "ok"})
                 ud["motivo"] = text
                 user_data[from_number] = ud
                 send_to_sheets({
