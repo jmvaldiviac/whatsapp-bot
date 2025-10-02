@@ -20,7 +20,13 @@ app = FastAPI()
 user_states = {}
 user_data = {}
 
-# Enviar mensaje de texto
+# Lista de comunas válidas de Santiago (ejemplo, puedes ampliarla)
+COMUNAS_SANTIAGO = {
+    "providencia", "las condes", "la florida", "ñuñoa", "santiago centro",
+    "puente alto", "maipú", "peñalolén", "vitacura", "macul"
+}
+
+# --- Helpers ---
 def send_text(to: str, text: str):
     url = f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
@@ -33,7 +39,35 @@ def send_text(to: str, text: str):
     r = requests.post(url, headers=headers, json=payload)
     print("[SEND_TEXT] response:", r.status_code, r.text)
 
-# Guardar en Google Sheets
+def send_main_menu(to: str):
+    """Muestra el menú principal como lista interactiva"""
+    url = f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/messages"
+    headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "interactive",
+        "interactive": {
+            "type": "list",
+            "body": {"text": "¡Hola! Soy Loba 🐶 ¿cómo te ayudo hoy?"},
+            "action": {
+                "button": "Elige una opción",
+                "sections": [
+                    {
+                        "title": "Servicios",
+                        "rows": [
+                            {"id": "educacion", "title": "Educación canina"},
+                            {"id": "paseos", "title": "Paseos"},
+                            {"id": "humano", "title": "Hablar con humano"}
+                        ]
+                    }
+                ]
+            }
+        }
+    }
+    r = requests.post(url, headers=headers, json=payload)
+    print("[SEND_MENU] response:", r.status_code, r.text)
+
 def send_to_sheets(data: dict):
     try:
         r = requests.post(SHEETS_WEBAPP_URL, json=data, timeout=10)
@@ -41,7 +75,7 @@ def send_to_sheets(data: dict):
     except Exception as e:
         print("[SHEETS ERROR]", e)
 
-# --- Rutas ---
+# --- Endpoints ---
 @app.get("/debug")
 def debug():
     return {"verify_token_server": VERIFY_TOKEN}
@@ -61,7 +95,7 @@ async def receive(request: Request):
     body = await request.json()
     print("[POST webhook] body:", body)
 
-    if "entry" not in body: 
+    if "entry" not in body:
         return {"status": "ignored"}
 
     for entry in body["entry"]:
@@ -71,7 +105,13 @@ async def receive(request: Request):
             messages = value.get("messages", [])
             for message in messages:
                 from_number = message["from"]
-                text = message.get("text", {}).get("body", "").strip().lower()
+
+                # Si viene de un botón/selección de lista
+                if message.get("type") == "interactive":
+                    text = message["interactive"]["list_reply"]["id"]
+                else:
+                    text = message.get("text", {}).get("body", "").strip().lower()
+
                 state = user_states.get(from_number, "menu")
                 ud = user_data.get(from_number, {})
 
@@ -79,40 +119,44 @@ async def receive(request: Request):
 
                 # --- Menú principal ---
                 if state == "menu":
-                    if text in ["1", "educacion", "educación"]:
+                    if text == "educacion":
                         user_states[from_number] = "educacion_nombre"
-                        user_data[from_number] = {}  # limpiar
+                        user_data[from_number] = {}
                         send_text(from_number, "🐾 ¿Cómo se llama tu perrito?")
-                    elif text in ["2", "paseos", "paseo"]:
+                    elif text == "paseos":
                         user_states[from_number] = "paseo_nombre"
-                        user_data[from_number] = {}  # limpiar
+                        user_data[from_number] = {}
                         send_text(from_number, "🐕 ¿Cómo se llama tu perrito?")
-                    elif text in ["3", "humano", "asistente"]:
+                    elif text == "humano":
                         user_states[from_number] = "humano_nombre"
-                        user_data[from_number] = {}  # limpiar
+                        user_data[from_number] = {}
                         send_text(from_number, "👤 ¿Cuál es tu nombre?")
                     else:
-                        send_text(from_number,
-                            "¡Hola! Soy Loba 🐶, ¿cómo te ayudo?\n"
-                            "1️⃣ Educación canina\n"
-                            "2️⃣ Paseos\n"
-                            "3️⃣ Hablar con humano"
-                        )
+                        send_main_menu(from_number)
 
-                # --- Educación ---
+                # --- Educación Canina ---
                 elif state == "educacion_nombre":
+                    if not text.replace(" ", "").isalpha():
+                        send_text(from_number, "🤔 El nombre debería tener solo letras. Inténtalo de nuevo 🐾.")
+                        return JSONResponse({"status": "ok"})
                     ud["nombre_perro"] = text
                     user_data[from_number] = ud
                     send_text(from_number, "📍 ¿En qué comuna vives?")
                     user_states[from_number] = "educacion_comuna"
 
                 elif state == "educacion_comuna":
+                    if text.lower() not in COMUNAS_SANTIAGO:
+                        send_text(from_number, "📍 Esa comuna no la reconozco en Santiago. Por favor escribe otra 🙏.")
+                        return JSONResponse({"status": "ok"})
                     ud["comuna"] = text
                     user_data[from_number] = ud
                     send_text(from_number, "📋 ¿Qué te gustaría trabajar con tu perrito?")
                     user_states[from_number] = "educacion_detalle"
 
                 elif state == "educacion_detalle":
+                    if len(text) < 5:
+                        send_text(from_number, "📝 Por favor dame un poco más de detalle (mínimo 5 caracteres).")
+                        return JSONResponse({"status": "ok"})
                     ud["detalle"] = text
                     user_data[from_number] = ud
                     send_to_sheets({
@@ -127,18 +171,24 @@ async def receive(request: Request):
 
                 # --- Paseos ---
                 elif state == "paseo_nombre":
+                    if not text.replace(" ", "").isalpha():
+                        send_text(from_number, "🤔 El nombre debería tener solo letras. Inténtalo de nuevo 🐕.")
+                        return JSONResponse({"status": "ok"})
                     ud["nombre_perro"] = text
                     user_data[from_number] = ud
                     send_text(from_number, "📍 ¿En qué comuna vives?")
                     user_states[from_number] = "paseo_comuna"
 
                 elif state == "paseo_comuna":
+                    if text.lower() not in COMUNAS_SANTIAGO:
+                        send_text(from_number, "📍 Esa comuna no la reconozco en Santiago. Por favor escribe otra 🙏.")
+                        return JSONResponse({"status": "ok"})
                     ud["comuna"] = text
                     user_data[from_number] = ud
                     send_to_sheets({
                         "nombre": ud.get("nombre_perro", ""),
                         "comuna": ud.get("comuna", ""),
-                        "detalle": "",  # vacío
+                        "detalle": "",  # vacío para paseos
                         "servicio": "Paseos",
                         "numero": from_number
                     })
@@ -147,15 +197,20 @@ async def receive(request: Request):
 
                 # --- Hablar con humano ---
                 elif state == "humano_nombre":
+                    if not text.replace(" ", "").isalpha():
+                        send_text(from_number, "👤 El nombre debería tener solo letras. Inténtalo de nuevo.")
+                        return JSONResponse({"status": "ok"})
                     ud["nombre_cliente"] = text
                     user_data[from_number] = ud
                     send_text(from_number, "📋 ¿Cuál es el motivo de tu consulta?")
                     user_states[from_number] = "humano_motivo"
 
                 elif state == "humano_motivo":
+                    if len(text) < 5:
+                        send_text(from_number, "📝 Por favor dime un poco más de tu consulta (mínimo 5 caracteres).")
+                        return JSONResponse({"status": "ok"})
                     ud["motivo"] = text
                     user_data[from_number] = ud
-                    # Notificar a Sheets
                     send_to_sheets({
                         "nombre": ud.get("nombre_cliente", ""),
                         "comuna": "",
@@ -163,7 +218,6 @@ async def receive(request: Request):
                         "servicio": "Derivado a humano",
                         "numero": from_number
                     })
-                    # Notificar al asistente
                     if ASISTENTE_NUMERO:
                         send_text(
                             ASISTENTE_NUMERO,
