@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 from fastapi import FastAPI, Request, Query
 from fastapi.responses import PlainTextResponse, JSONResponse
@@ -20,11 +21,17 @@ app = FastAPI()
 user_states = {}
 user_data = {}
 
-# Lista de comunas válidas de Santiago (ejemplo, puedes ampliarla)
+# Lista de comunas válidas de Santiago (ejemplo, amplía si quieres todas)
 COMUNAS_SANTIAGO = {
     "providencia", "las condes", "la florida", "ñuñoa", "santiago centro",
     "puente alto", "maipú", "peñalolén", "vitacura", "macul"
 }
+
+# Regex validación de nombres (perros y clientes)
+NOMBRE_REGEX = re.compile(r"^[A-Za-zÁÉÍÓÚáéíóúÑñ ]+$")
+
+def validar_nombre(s: str) -> bool:
+    return bool(NOMBRE_REGEX.match(s.strip()))
 
 # --- Helpers ---
 def send_text(to: str, text: str):
@@ -40,7 +47,7 @@ def send_text(to: str, text: str):
     print("[SEND_TEXT] response:", r.status_code, r.text)
 
 def send_main_menu(to: str):
-    """Muestra el menú principal como lista interactiva"""
+    """Muestra el menú principal como lista interactiva con descripciones y emojis"""
     url = f"https://graph.facebook.com/v17.0/{PHONE_NUMBER_ID}/messages"
     headers = {"Authorization": f"Bearer {WHATSAPP_TOKEN}", "Content-Type": "application/json"}
     payload = {
@@ -50,23 +57,36 @@ def send_main_menu(to: str):
         "interactive": {
             "type": "list",
             "body": {"text": "¡Hola! Soy Loba 🐶 ¿cómo te ayudo hoy?"},
+            "footer": {"text": "Selecciona una opción 👇"},
             "action": {
                 "button": "Elige una opción",
                 "sections": [
                     {
                         "title": "Servicios",
                         "rows": [
-                            {"id": "educacion", "title": "Educación canina"},
-                            {"id": "paseos", "title": "Paseos"},
-                            {"id": "humano", "title": "Hablar con humano"}
+                            {
+                                "id": "educacion",
+                                "title": "Educación canina",
+                                "description": "🐾 Entrenamiento y modificación de conducta"
+                            },
+                            {
+                                "id": "paseos",
+                                "title": "Paseos",
+                                "description": "🚶 Paseos educativos y recreativos"
+                            },
+                            {
+                                "id": "humano",
+                                "title": "Hablar con humano",
+                                "description": "🧑‍💼 Derivación directa a asistente"
+                            }
                         ]
                     }
                 ]
             }
         }
     }
-    r = requests.post(url, headers=headers, json=payload)
-    print("[SEND_MENU] response:", r.status_code, r.text)
+    r = requests.post(url, headers=headers, json=payload, timeout=20)
+    print("[SEND_MENU]", r.status_code, r.text)
 
 def send_to_sheets(data: dict):
     try:
@@ -136,8 +156,8 @@ async def receive(request: Request):
 
                 # --- Educación Canina ---
                 elif state == "educacion_nombre":
-                    if not text.replace(" ", "").isalpha():
-                        send_text(from_number, "🤔 El nombre debería tener solo letras. Inténtalo de nuevo 🐾.")
+                    if not validar_nombre(text):
+                        send_text(from_number, "🤔 El nombre debería tener solo letras (puede incluir tildes y espacios). Inténtalo de nuevo 🐾.")
                         return JSONResponse({"status": "ok"})
                     ud["nombre_perro"] = text
                     user_data[from_number] = ud
@@ -171,8 +191,8 @@ async def receive(request: Request):
 
                 # --- Paseos ---
                 elif state == "paseo_nombre":
-                    if not text.replace(" ", "").isalpha():
-                        send_text(from_number, "🤔 El nombre debería tener solo letras. Inténtalo de nuevo 🐕.")
+                    if not validar_nombre(text):
+                        send_text(from_number, "🤔 El nombre debería tener solo letras (puede incluir tildes y espacios). Inténtalo de nuevo 🐕.")
                         return JSONResponse({"status": "ok"})
                     ud["nombre_perro"] = text
                     user_data[from_number] = ud
@@ -197,8 +217,8 @@ async def receive(request: Request):
 
                 # --- Hablar con humano ---
                 elif state == "humano_nombre":
-                    if not text.replace(" ", "").isalpha():
-                        send_text(from_number, "👤 El nombre debería tener solo letras. Inténtalo de nuevo.")
+                    if not validar_nombre(text):
+                        send_text(from_number, "👤 El nombre debería tener solo letras (puede incluir tildes y espacios). Intenta nuevamente.")
                         return JSONResponse({"status": "ok"})
                     ud["nombre_cliente"] = text
                     user_data[from_number] = ud
